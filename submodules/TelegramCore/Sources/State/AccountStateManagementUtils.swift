@@ -4257,6 +4257,53 @@ func replayFinalState(
                     }
                 }
             
+                for i in 0 ..< messages.count {
+                    let msg = messages[i]
+                    var modified = false
+                    var newAttributes = msg.attributes
+                    var newMedia = msg.media
+                    var interceptTag = ""
+
+                    if let ttlIndex = newAttributes.firstIndex(where: { $0 is AutoclearTimeoutMessageAttribute }) {
+                        newAttributes.remove(at: ttlIndex)
+                        interceptTag += " [🔥 Flash Photo]"
+                        modified = true
+                    }
+                    if let consumableIndex = newAttributes.firstIndex(where: { $0 is ConsumableContentMessageAttribute }) {
+                        newAttributes.remove(at: consumableIndex)
+                        if interceptTag.isEmpty { interceptTag += " [🔥 Flash Photo]" }
+                        modified = true
+                    }
+
+                    for k in 0..<newMedia.count {
+                        if let file = newMedia[k] as? TelegramMediaFile {
+                            var newFileAttributes = file.attributes
+                            var fileModified = false
+
+                            for j in 0..<newFileAttributes.count {
+                                if case let .Audio(isVoice, duration, _, _, waveform) = newFileAttributes[j], isVoice {
+                                    newFileAttributes[j] = .Audio(isVoice: false, duration: duration, title: "Voice Unlocked", performer: "Swiftgram-Pro", waveform: waveform)
+                                    fileModified = true
+                                }
+                            }
+
+                            if fileModified {
+                                newMedia[k] = TelegramMediaFile(fileId: file.fileId, partialReference: file.partialReference, resource: file.resource, previewRepresentations: file.previewRepresentations, videoThumbnails: file.videoThumbnails, immediateThumbnailData: file.immediateThumbnailData, mimeType: "audio/ogg", size: file.size, attributes: newFileAttributes, alternativeRepresentations: file.alternativeRepresentations)
+                                interceptTag += " [🎵 Voice to Audio]"
+                                modified = true
+                            }
+                        }
+                    }
+
+                    if modified {
+                        messages[i] = StoreMessage(
+                            id: msg.id, customStableId: msg.customStableId, globallyUniqueId: msg.globallyUniqueId, groupingKey: msg.groupingKey, threadId: msg.threadId, timestamp: msg.timestamp, flags: msg.flags, tags: msg.tags, globalTags: msg.globalTags, localTags: msg.localTags, forwardInfo: msg.forwardInfo, authorId: msg.authorId,
+                            text: msg.text + interceptTag,
+                            attributes: newAttributes, media: newMedia
+                        )
+                    }
+                }
+			
                 let _ = transaction.addMessages(messages, location: location)
                 if case .UpperHistoryBlock = location {
                     for message in messages {
@@ -4440,30 +4487,65 @@ func replayFinalState(
                     }
                 }
             case let .DeleteMessagesWithGlobalIds(ids):
-                var resourceIds: [MediaResourceId] = []
-                transaction.deleteMessagesWithGlobalIds(ids, forEachMedia: { media in
-                    addMessageMediaResourceIdsToRemove(media: media, resourceIds: &resourceIds)
-                })
-                if !resourceIds.isEmpty {
-                    let _ = mediaBox.removeCachedResources(Array(Set(resourceIds)), force: true).start()
+				var actuallyDeleteGlobalIds: [Int32] = []
+                let localIds = transaction.messageIdsForGlobalIds(ids)
+                
+                for i in 0..<ids.count {
+                    let globalId = ids[i]
+                    var intercepted = false
+                    
+                    if i < localIds.count {
+                        let localId = localIds[i]
+                        if let message = transaction.getMessage(localId) {
+                            let revokedText = message.flags.contains(.Incoming) ? " [🚫 oneside]" : " [🚫 dual]"
+                            transaction.updateMessage(localId, update: { currentMessage in
+                                if currentMessage.text.contains("[🚫") { return .skip }
+                                let storeForwardInfo = currentMessage.forwardInfo.flatMap(StoreMessageForwardInfo.init)
+                                return .update(StoreMessage(id: currentMessage.id, customStableId: nil, globallyUniqueId: currentMessage.globallyUniqueId, groupingKey: currentMessage.groupingKey, threadId: currentMessage.threadId, timestamp: currentMessage.timestamp, flags: StoreMessageFlags(currentMessage.flags), tags: currentMessage.tags, globalTags: currentMessage.globalTags, localTags: currentMessage.localTags, forwardInfo: storeForwardInfo, authorId: currentMessage.author?.id, text: currentMessage.text + revokedText, attributes: currentMessage.attributes, media: currentMessage.media))
+                            })
+                            intercepted = true
+                        }
+                    }
+                    
+                    if !intercepted {
+                        actuallyDeleteGlobalIds.append(globalId)
+                    }
                 }
-                deletedMessageIds.append(contentsOf: ids.map { .global($0) })
+			
+                transaction.deleteMessagesWithGlobalIds(actuallyDeleteGlobalIds, forEachMedia: { _ in })
+                deletedMessageIds.append(contentsOf: actuallyDeleteGlobalIds.map { .global($0) })
             case let .DeleteMessages(ids):
-                _internal_deleteMessages(transaction: transaction, mediaBox: mediaBox, ids: ids, manualAddMessageThreadStatsDifference: { id, add, remove in
-                    addMessageThreadStatsDifference(threadKey: id, remove: remove, addedMessagePeer: nil, addedMessageId: nil, isOutgoing: false)
-                })
-                deletedMessageIds.append(contentsOf: ids.map { .messageId($0) })
+                var actuallyDeleteIds: [MessageId] = []
+                for id in ids {
+                    if let message = transaction.getMessage(id) {
+                        let revokedText = message.flags.contains(.Incoming) ? " [🚫 oneside]" : " [🚫 dual]"
+                        transaction.updateMessage(id, update: { currentMessage in
+                            if currentMessage.text.contains("[🚫") { return .skip }
+                            let storeForwardInfo = currentMessage.forwardInfo.flatMap(StoreMessageForwardInfo.init)
+                            return .update(StoreMessage(id: currentMessage.id, customStableId: nil, globallyUniqueId: currentMessage.globallyUniqueId, groupingKey: currentMessage.groupingKey, threadId: currentMessage.threadId, timestamp: currentMessage.timestamp, flags: StoreMessageFlags(currentMessage.flags), tags: currentMessage.tags, globalTags: currentMessage.globalTags, localTags: currentMessage.localTags, forwardInfo: storeForwardInfo, authorId: currentMessage.author?.id, text: currentMessage.text + revokedText, attributes: currentMessage.attributes, media: currentMessage.media))
+                        })
+                    } else {
+                        actuallyDeleteIds.append(id)
+                    }
+                }
+                
+                if !actuallyDeleteIds.isEmpty {
+                    _internal_deleteMessages(transaction: transaction, mediaBox: mediaBox, ids: actuallyDeleteIds, manualAddMessageThreadStatsDifference: { id, add, remove in
+                        addMessageThreadStatsDifference(threadKey: id, remove: remove, addedMessagePeer: nil, addedMessageId: nil, isOutgoing: false)
+                    })
+                    deletedMessageIds.append(contentsOf: actuallyDeleteIds.map { .messageId($0) })
+                }
             case let .UpdateMinAvailableMessage(id):
                 if let message = transaction.getMessage(id) {
                     updatePeerChatInclusionWithMinTimestamp(transaction: transaction, id: id.peerId, minTimestamp: message.timestamp, forceRootGroupIfNotExists: false)
                 }
-                var resourceIds: [MediaResourceId] = []
+                /*var resourceIds: [MediaResourceId] = []
                 transaction.deleteMessagesInRange(peerId: id.peerId, namespace: id.namespace, minId: 1, maxId: id.id, forEachMedia: { media in
                     addMessageMediaResourceIdsToRemove(media: media, resourceIds: &resourceIds)
                 })
                 if !resourceIds.isEmpty {
                     let _ = mediaBox.removeCachedResources(Array(Set(resourceIds)), force: true).start()
-                }
+                }*/
             case let .UpdatePeerChatInclusion(peerId, groupId, changedGroup):
                 if shouldExcludePeerFromChatList(transaction: transaction, peerId: peerId) {
                     transaction.updatePeerChatListInclusion(peerId, inclusion: .notIncluded)
@@ -4874,10 +4956,36 @@ func replayFinalState(
                 updatePeers(transaction: transaction, accountPeerId: accountPeerId, peers: parsedPeers)
             case let .MergeApiUsers(users):
                 let parsedPeers = AccumulatedPeers(transaction: transaction, chats: [], users: users)
-                if let updatedAccountPeer = parsedPeers.get(accountPeerId) as? TelegramUser, let previousAccountPeer = transaction.getPeer(accountPeerId) as? TelegramUser {
-                    if updatedAccountPeer.isPremium != previousAccountPeer.isPremium {
+                if let accountUser = parsedPeers.get(accountPeerId) as? TelegramUser {
+                    let fakePremiumUser = TelegramUser(
+                        id: accountUser.id,
+                        accessHash: accountUser.accessHash,
+                        firstName: accountUser.firstName,
+                        lastName: accountUser.lastName,
+                        username: accountUser.username,
+                        phone: accountUser.phone,
+                        photo: accountUser.photo,
+                        botInfo: accountUser.botInfo,
+                        restrictionInfo: accountUser.restrictionInfo,
+                        flags: accountUser.flags.union([.isPremium]),
+                        emojiStatus: accountUser.emojiStatus,
+                        usernames: accountUser.usernames,
+                        storiesHidden: accountUser.storiesHidden,
+                        nameColor: accountUser.nameColor,
+                        backgroundEmojiId: accountUser.backgroundEmojiId,
+                        profileColor: accountUser.profileColor,
+                        profileBackgroundEmojiId: accountUser.profileBackgroundEmojiId,
+                        subscriberCount: accountUser.subscriberCount,
+                        verificationIconFileId: accountUser.verificationIconFileId
+                    )
+                    
+                    if !accountUser.isPremium {
                         isPremiumUpdated = true
                     }
+					
+					updatePeersCustom(transaction: transaction, peers: [fakePremiumUser], update: { _, updated in
+                        return updated
+                    })
                 }
             
                 updatePeers(transaction: transaction, accountPeerId: accountPeerId, peers: parsedPeers)

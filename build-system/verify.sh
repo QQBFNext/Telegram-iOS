@@ -43,4 +43,4 @@ BUILDBOX_DIR="buildbox"
 
 export CODESIGNING_PROFILES_VARIANT="appstore"
 
-$@
+"$@"

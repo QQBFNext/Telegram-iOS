@@ -233,31 +233,18 @@ private func pushPeerReadState(network: Network, postbox: Postbox, stateManager:
             switch readState {
             case .idBased:
                 return .single(readState)
-            case let .indexBased(maxIncomingReadIndex, _, _, _):
-                return network.request(Api.functions.messages.readEncryptedHistory(peer: inputPeer, maxDate: maxIncomingReadIndex.timestamp))
-                    |> mapError { _ in
-                        return PeerReadStateValidationError.retry
-                    }
-                |> mapToSignal { _ -> Signal<PeerReadState, PeerReadStateValidationError> in
-                    return .single(readState)
-                }
+            case .indexBased:
+                return .single(readState)
             }
         }
     } else {
         return inputPeer(postbox: postbox, peerId: peerId)
         |> mapToSignal { inputPeer -> Signal<PeerReadState, PeerReadStateValidationError> in
             switch inputPeer {
-            case let .inputPeerChannel(inputPeerChannelData):
-                let (channelId, accessHash) = (inputPeerChannelData.channelId, inputPeerChannelData.accessHash)
+            case .inputPeerChannel:
                 switch readState {
-                case let .idBased(maxIncomingReadId, _, _, _, markedUnread):
-                    var pushSignal: Signal<Void, NoError> = network.request(Api.functions.channels.readHistory(channel: Api.InputChannel.inputChannel(.init(channelId: channelId, accessHash: accessHash)), maxId: maxIncomingReadId))
-                    |> `catch` { _ -> Signal<Api.Bool, NoError> in
-                        return .complete()
-                    }
-                    |> mapToSignal { _ -> Signal<Void, NoError> in
-                        return .complete()
-                    }
+                case let .idBased(_, _, _, _, markedUnread):
+                    var pushSignal: Signal<Void, NoError> = .complete()
                     if markedUnread {
                         pushSignal = pushSignal
                         |> then(network.request(Api.functions.messages.markDialogUnread(flags: 1 << 0, parentPeer: nil, peer: .inputDialogPeer(.init(peer: inputPeer))))
@@ -280,22 +267,8 @@ private func pushPeerReadState(network: Network, postbox: Postbox, stateManager:
                 }
             default:
                 switch readState {
-                case let .idBased(maxIncomingReadId, _, _, _, markedUnread):
-                    var pushSignal: Signal<Void, NoError> = network.request(Api.functions.messages.readHistory(peer: inputPeer, maxId: maxIncomingReadId))
-                    |> map(Optional.init)
-                    |> `catch` { _ -> Signal<Api.messages.AffectedMessages?, NoError> in
-                        return .single(nil)
-                    }
-                    |> mapToSignal { result -> Signal<Void, NoError> in
-                        if let result = result {
-                            switch result {
-                                case let .affectedMessages(affectedMessagesData):
-                                    let (pts, ptsCount) = (affectedMessagesData.pts, affectedMessagesData.ptsCount)
-                                    stateManager.addUpdateGroups([.updatePts(pts: pts, ptsCount: ptsCount)])
-                            }
-                        }
-                        return .complete()
-                    }
+                case let .idBased(_, _, _, _, markedUnread):
+                    var pushSignal: Signal<Void, NoError> = .complete()
 
                     if markedUnread {
                         pushSignal = pushSignal
