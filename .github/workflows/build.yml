@@ -121,4 +121,4 @@ jobs:
           files: |
             /Users/Shared/telegram-ios/build/artifacts/SwiftgramPro.ipa
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.BIGTOKEN }}
