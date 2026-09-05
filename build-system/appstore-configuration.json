@@ -10,6 +10,6 @@
 	"app_specific_url_scheme": "tg",
 	"premium_iap_product_id": "org.telegram.telegramPremium.monthly",
 	"enable_siri": true,
-	"enable_icloud": true,
+	"enable_icloud": false,
 	"sg_config": "{\"app_title\":\"SwiftgramPro\",\"short_name\":\"SwiftgramPro\"}"
 }
